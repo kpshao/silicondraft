@@ -1,0 +1,54 @@
+# ============================================================
+# SiliconDraft .gitignore
+# ============================================================
+
+# ---------- 操作系统 ----------
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------- .NET 构建产物 ----------
+[Bb]in/
+[Oo]bj/
+artifacts/
+publish/
+TestResults/
+BenchmarkDotNet.Artifacts/
+*.nupkg
+*.snupkg
+*.binlog
+project.lock.json
+project.fragment.lock.json
+
+# ---------- IDE / 编辑器 ----------
+.vs/
+.idea/
+*.user
+*.suo
+*.userprefs
+*.DotSettings.user
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.json
+
+# ---------- agent 工具的本地状态 ----------
+# WorkBuddy 记忆目录：与 doc/ 大量重叠，不入库以免形成第二份真相
+.workbuddy/
+.claude/settings.local.json
+
+# ---------- 日志与覆盖率 ----------
+*.log
+coverage*.xml
+coverage*.info
+*.coverlet.json
+
+# ---------- SiliconDraft 运行期产物 ----------
+# 用户产出（工作簿目录包 / 单文件包）不进仓库
+*.sdworkbook/
+*.sdwb
