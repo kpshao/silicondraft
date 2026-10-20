@@ -182,7 +182,7 @@
 | Parquet 直写（可选） | `ParquetSharp` | Apache-2.0 | 仅在需要绕开 DuckDB 写 Parquet 时使用 |
 | XLSX（第二期） | `ClosedXML` 或 `DocumentFormat.OpenXml` | MIT | 第二期格式扩展 |
 | 打包 / 压缩 | `System.IO.Compression`（ZipArchive，BCL） | MIT (BCL) | `workbook pack` / `unpack`；**不需要第三方压缩库** |
-| 文件锁 | `FileStream` 带 `FileShare.None` + **自研锁文件与心跳机制** | MIT (BCL) | 跨平台文件锁差异较大，建议以应用层锁为主，OS 锁为辅（`SD-EXT-101`） |
+| 工作簿锁 | **应用层锁文件（`FileMode.CreateNew`）+ DuckDB 原生文件锁兜底** | MIT (BCL) | 不使用 `FileShare` / `FileStream.Lock` 做跨进程仲裁：Unix 上非 `None` 的 `FileShare` 不提供写互斥，macOS 上 `FileStream.Lock` 抛 `PlatformNotSupportedException`；见 ADR-0002 |
 | 回收站 / 垃圾箱 | 平台相关：Windows `SHFileOperation`/`IFileOperation`、macOS `NSFileManager.TrashItem`、Linux Freedesktop Trash 规范 | — | **无统一跨平台库**，需自研薄封装 + 降级路径（`extra/trash/`） |
 | 状态机 | 自研（枚举 + 显式转移表） | — | 工作簿状态机不复杂，**不引入第三方状态机库** |
 | 单测 | `xUnit`、`FluentAssertions` | Apache-2.0 / MIT | — |
@@ -474,6 +474,8 @@ stateDiagram-v2
 **SD-SYS-222**（MUST）：`workbook verify` 必须可在**不打开为读写**的前提下执行（只读打开库 + 读取清单），用于校验任意外部收到的工作簿包。必须输出结构化结果（`--output json`），含逐条 INV 的结论。
 
 **SD-SYS-223**（SHOULD）：`workbook repair` 必须能处理：① 清理残留锁；② 重建清单（`rebuild-manifest`）；③ 修正 `state` 字段；④ 清理 staging 中已入库的残留文件；⑤ **报告无法修复的问题而非静默修改**。修复必须写操作日志，且**必须在修复前自动备份 `workbook.json`**。
+
+> **打开时的状态收敛（实现规则）**：取得写锁后，若清单 `state ∈ {Creating, Generating}`，说明上次进程未正常关闭。必须先在库内 `sd_workbook.state` 与 `workbook.json.state` 中收敛为 `Incomplete`（WARN 记录），再继续；除此之外不得对数据做任何自动修正。
 
 
 ---
@@ -1324,12 +1326,16 @@ v(x,y) ≈ c0 + Σ_{k=1..4} c_k (r/R)^k
 > **需求侧对应**：需求册 §4.5 保留**行为要求**（同工作簿互斥、跨工作簿互不影响、失效锁不得跨主机自动清理、错误提示必须点名工作簿）；**锁文件字段、心跳、PID 判定表属实现**。
 
 
-**SD-SYS-250**（MUST）：**工作簿文件的进程独占**是架构前提。`DuckDbBackend` 必须在打开工作簿时获取**进程内互斥 + 进程间文件锁双重保护**：
+**SD-SYS-250**（MUST）：**工作簿文件的进程独占**是架构前提。打开工作簿时必须获得以下保护：
 
 | 层级 | 机制 | 行为 |
 | --- | --- | --- |
-| 进程间 | 独占文件锁（`<workbook>/workbook.lock`）+ 打开时的 DuckDB 原生文件锁 | 若该工作簿已被其他进程占用，立即以 `ERR_WORKBOOK_LOCKED (14)` 退出，并在提示中给出**持有者信息**（PID、主机、进程启动时间）与**可选替代方案**；**不得重试等待死等**（可用 `--on-lock wait\|fail` 配置） |
-| 进程内 | `SemaphoreSlim(1,1)` 守护的写事务队列（作用域 = 当前工作簿） | 所有写操作串行化 |
+| 进程内（会话） | 会话单例 + 进程级路径注册表（规范化路径 → 会话令牌） | 同进程第二次打开同一工作簿立即以 `ERR_LOCKED (13)` 失败 |
+| 进程间（应用层） | `workbook.lock` 以 `FileMode.CreateNew`（`O_CREAT\|O_EXCL`）原子创建；**文件存在即被占用** | 若该工作簿已被其他进程占用，立即以 `ERR_WORKBOOK_LOCKED (14)` 退出，并在提示中给出**持有者信息**（PID、主机、进程启动时间）与替代建议；**不得重试等待死等** |
+| 进程间（存储层兜底） | 打开 `workbook.duckdb` 时由 DuckDB 获取**原生文件锁** | 作为失效锁清理的串行化原语；同时防御外部 DuckDB 客户端 |
+| 进程内（写事务） | `SemaphoreSlim(1,1)` 守护的写事务队列（作用域 = 当前工作簿） | 所有写操作串行化 |
+
+> **不使用的机制（ADR-0002）**：`workbook.lock` **不**使用 OS 级 `FileShare` 锁。.NET 在 Unix 上只把 `FileShare.None` 映射为 `flock(LOCK_EX)`，其余取值不提供写互斥；而持有 `FileShare.None` 又会让竞争进程无法读取持有者信息。`FileStream.Lock` 在 macOS 上直接抛 `PlatformNotSupportedException`。两者都无法同时满足"互斥"与"持有者信息可读"。
 
 **SD-SYS-251**（MUST）：**锁的作用域只有一个工作簿**，必须显式呈现其影响面：
 
@@ -1360,6 +1366,36 @@ v(x,y) ≈ c0 + Σ_{k=1..4} c_k (r/R)^k
 
 **SD-SYS-253**（MUST）：`WorkbookSession` 是**全应用唯一的工作簿上下文**（单例服务），所有数据访问都必须经由它取得绑定。禁止任何组件自行拼接数据库文件路径、自行打开 `DuckDBConnection`。切换工作簿必须先释放当前会话的全部连接与锁，再建立新会话，且必须**原子**（失败时回滚到原会话或进入无工作簿状态）；若当前会话有未保存变更，必须先走「保存 / 丢弃 / 取消」流程。
 
+> **终态接口签名**（实现层，`SiliconDraft.Core/Workbook/`）：
+>
+> ```csharp
+> public interface IWorkbookSession
+> {
+>     WorkbookContext? Current { get; }          // null = 无工作簿，合法状态
+>     WorkbookSessionState State { get; }
+>     event EventHandler<WorkbookSessionChangedEventArgs>? Changed;
+>
+>     Task<WorkbookContext> CreateAsync(WorkbookCreateOptions options, CancellationToken ct = default);
+>     Task<WorkbookContext> OpenAsync(WorkbookOpenOptions options, CancellationToken ct = default);
+>     Task CloseAsync(CancellationToken ct = default);
+> }
+>
+> public sealed record WorkbookContext(WorkbookHandle Handle, IConnectionManager Connections);
+> public sealed record WorkbookHandle(WorkbookId Id, string Name, string RootPath, bool IsTemporary, WorkbookMode Mode);
+> public enum WorkbookMode { ReadWrite, ReadOnly }
+> public enum WorkbookState { Creating, Ready, Generating, Incomplete, Dirty, Corrupt }
+> public enum WorkbookSessionState { NoWorkbook, Opening, Ready, Closing, Faulted }
+> ```
+>
+> 实现约束：
+>
+> - `WorkbookId` 是 Crockford Base32 的只读 record struct（26 字符，字符串形式带 `wb_` 前缀）。
+> - `WorkbookSession` 是实现 `IWorkbookSession` 的 `internal sealed` 类，DI **单例**；同一实例同时注册为门面 `IWorkbookService`（`IWorkbookService : IWorkbookSession`）。GUI 与 CLI 注入门面，Core 内部服务注入 `IWorkbookSession`。
+> - `IConnectionManager` **不单独注册**为 DI 服务，只能从 `Current!.Connections` 取得，避免出现第二个隐藏的工作簿绑定。
+> - 切换工作簿（在已有会话时调用 `CreateAsync`/`OpenAsync`）：目标路径与当前相同 → 幂等返回；否则在 `SemaphoreSlim(1,1)` 内**先完整建立新会话**（锁 → 清单 → 库 → 不变量），成功后再释放旧会话并交换；新会话建立失败则旧会话原样保留。
+> - `Changed` 在触发操作的调用线程上同步触发；GUI 侧自行调度到 UI 线程，Core 不感知 UI。
+> - 切片不实现 `ReadOnly` 路径、`SaveAs`、心跳与恢复页；`WorkbookMode` / `WorkbookState` 的枚举值按终态定义，不因切片而裁剪。
+
 **SD-SYS-254**（MUST）：**"无当前工作簿"必须是一个合法的应用状态**（首次启动、关闭工作簿后）：此时 GUI 显示**起始页**（新建 / 打开 / 最近打开 / 恢复），CLI 的生成类命令必须报 `ERR_NO_WORKBOOK (16)` 并提示 `workbook new` 或 `--workbook <path>`。数据类命令（`query` / `export` / `stats`）必须强制显式指定 `--workbook`。
 
 **SD-SYS-255**（MUST）：锁文件（`workbook.lock`）必须包含足以定位持有者的信息，并支持**失效锁检测**：
@@ -1378,14 +1414,19 @@ v(x,y) ≈ c0 + Σ_{k=1..4} c_k (r/R)^k
 }
 ```
 
+> 锁文件以仅属主可读写（Unix `0600`）创建；写入后关闭句柄，互斥语义由**文件存在性**承担。`heartbeatAt` 在写锁时等于 `startedAt`；周期心跳与恢复登记属产品层（`SD-SYS-232`），不参与锁仲裁。
+
 **SD-SYS-256**（MUST）：打开时的锁判定逻辑必须为：
 
 | 锁文件 | 持有进程状态 | 处理 |
 | --- | --- | --- |
-| 不存在 | — | 正常获取锁，进入读写 |
-| 存在，主机名相同，PID 存活且启动时间匹配 | 活着 | 报 `ERR_WORKBOOK_LOCKED (14)`，提示持有者信息与替代方案 |
-| 存在，主机名相同，PID 不存在 **或** 启动时间不匹配（PID 被复用） | 已死 | 视为**失效锁**，允许清理后重新获取；必须 **WARN 并记录**（不静默） |
+| 不存在 | — | 以 `FileMode.CreateNew` 原子创建锁文件，取得锁 |
+| 存在，主机名相同，PID 存活且启动时间匹配 | 活着 | 报 `ERR_WORKBOOK_LOCKED (14)`，提示持有者信息与替代建议 |
+| 存在，主机名相同，PID 不存在 **或** 启动时间不匹配（PID 被复用） | 已死 | 视为**失效锁**：先以读写打开 `workbook.duckdb` 证明无活写者，成功后删除旧锁并重新创建；必须 **WARN 并记录**（不静默） |
+| 存在，主机名相同，PID 存活但启动时间**读取失败**（权限等原因） | **未知** | 不得当作已死；报 14 并提示"无法确认持有者状态" |
 | 存在，主机名不同（网络共享目录场景） | **无法判定** | **禁止自动清理**（对方可能在另一台机器上活着）。必须报错并提示：① 显式 `--force-unlock`（打印强烈警告 + 要求 `--yes`）；② 或改用只读打开；③ 或使用 Parquet 只读归档 |
+
+> **失效锁清理的串行化**：清理必须以"DuckDB 打开成功"为前提——DuckDB 原生文件锁保证同一时刻只有一个进程能完成"判定失效 → 删除 → 重建"，避免两个进程同时清理时误删对方刚建立的新锁。若数据库打开失败，不得清理锁文件，按 `ERR_WORKBOOK_INVALID (17)` / `ERR_IO (8)` / `ERR_STORAGE (5)` 分类。
 
 **SD-SYS-257**（MUST）：**必须支持只读打开**（`--read-only` / GUI 只读对话框），且只读打开**不获取独占锁**。注意：若本机已有进程以读写打开该工作簿，同机只读会失败 —— 必须给出明确提示并建议改用共享 Parquet 归档。
 
@@ -1697,7 +1738,7 @@ erDiagram
 | 编号 | 强度 | Spike 项 | 验证内容 | 失败应对 |
 | --- | --- | --- | --- | --- |
 | **SD-EXT-100** | MUST | DuckDB.NET 入库吞吐与并发语义 | ① 实测批量入库吞吐是否达标；② 验证同进程多连接的可见性与快照语义；③ 验证 Parquet 暂存通道；④ 验证 `batch` 场景下同一进程依次 / 并行创建并释放多个独立工作簿时 DuckDB.NET 能正确处理；⑤ 验证"多实例各写不同工作簿"互不阻塞 | 直写通道不达标 ⇒ 定为通道 B 为默认；并发语义不满足 ⇒ 退化为单连接读写串行队列；并行创建多库不稳定 ⇒ `batch` 退化为串行创建 |
-| **SD-EXT-101** | MUST | **工作簿生命周期与锁的健壮性** | ① 跨进程锁与失效锁检测（含 PID 复用与跨主机场景）；② 随机时刻 `SIGKILL` 后的可恢复性；③ 三平台上的文件锁行为差异（Windows 独占 vs POSIX 建议锁）；④ `File.Move` 原子替换在三平台的表现；⑤ 回收站机制在三平台的可用性与降级路径 | Windows 与 POSIX 差异过大 ⇒ 统一改为"锁文件 + 心跳"的**纯应用层锁**，接受更弱的互斥保证但更强的跨平台一致性；无回收站 ⇒ 降级为 `extra/trash/` 软删除 + 定期清理 |
+| **SD-EXT-101** | MUST | **工作簿生命周期与锁的健壮性** | ① 跨进程锁与失效锁检测（含 PID 复用与跨主机场景）；② 随机时刻 `SIGKILL` 后的可恢复性；③ 三平台上的文件锁行为差异（Windows 独占 vs POSIX 建议锁）；④ `File.Move` 原子替换在三平台的表现；⑤ 回收站机制在三平台的可用性与降级路径 | 已定：采用**应用层锁文件（`CreateNew`）+ DuckDB 原生锁兜底**，不依赖 `FileShare` / `FileStream.Lock`（ADR-0002；macOS 的 `FileStream.Lock` 为 PNSE、Unix 非 `None` 的 `FileShare` 无写互斥）。Spike 余下验证项：DuckDB 原生锁在网络盘上的行为、`File.Move` 原子替换、回收站降级；无回收站 ⇒ `extra/trash/` 软删除 + 定期清理 |
 | **SD-EXT-102** | MUST | Avalonia + SkiaSharp 自绘 Wafer Map | 5,000 Die 下的缩放 / 平移帧率、tooltip、缺失 / 部分 Die 渲染、中文文本渲染 | 帧率不达标 ⇒ 引入位图缓存（按缩放级别预渲染）+ 分层绘制 |
 | **SD-EXT-103** | MUST | C# 实现 STDF Writer | 记录结构（`FAR` 首条 / `MRR` 末条 / 配对不变式）、计数记录一致性、整文件 gzip、字节序、第三方解析器可读 | 第三方解析器拒绝 ⇒ 逐字段对齐 STDF V4 规范并用外部工具定位差异 |
 | **SD-EXT-104** | MUST | FFT 谱合成空间场 + MathNet 数值 | 生成的场是否具有期望的空间自相关（`DQ-06`：残差场 Moran's I > 0.3）；性能是否满足 | 谱合成实现复杂 ⇒ 退化为 Perlin / Simplex 噪声叠加（质量略降但可控） |
@@ -1745,7 +1786,7 @@ erDiagram
 | --- | --- | --- | --- |
 | **R-10** | **DuckDB C# 客户端为 Secondary 支持级**（社区维护，非核心团队），存在维护风险 | 中 | 通过 `IStorageBackend` 抽象隔离；固定版本不浮动升级；保留 Parquet 路径作为备用；升级走"读旧工作簿 → 写新工作簿 → 校验 → 切换"演练流程 |
 | **R-11** | **跨 RID 浮点末位差异破坏可复现性** | 中 | 全链路 `InvariantCulture` + 按 `precision` 显式舍入 + `BinaryPrimitives`（不用 `BitConverter`）+ CI 跨 RID 输出比对（`SD-NFR-054`） |
-| **R-12** | 三平台文件锁 / 原子替换 / 回收站行为不一致 | 中 | 以应用层"锁文件 + 心跳 + 失效检测"为主、OS 锁为辅；无回收站时降级为 `extra/trash/` 软删除（见 Spike `SD-EXT-101`） |
+| **R-12** | 三平台文件锁 / 原子替换 / 回收站行为不一致 | 中 | 采用应用层锁文件（`CreateNew`）+ DuckDB 原生锁兜底 + PID/启动时间失效检测（ADR-0002），不依赖平台文件锁语义；无回收站时降级为 `extra/trash/` 软删除（见 Spike `SD-EXT-101`） |
 | **R-15** | Avalonia 自绘 Wafer Map 性能不足 | 中 | Spike 验证（`SD-EXT-102`）；失败时按缩放级别预渲染位图 + 分层绘制 |
 | **R-16** | .NET / XAML 团队技能不足导致架构复杂度过高 | 中 | 以 `SD-Q-041` 盘点团队技能；不足则简化抽象层次并加强文档 |
 
