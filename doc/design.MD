@@ -67,6 +67,7 @@
 | **D-16** | 存储引擎 | **DuckDB**（通过 DuckDB.NET），**Parquet** 作为归档与暂存格式 | SQLite；纯 Parquet；HDF5；RocksDB |
 | **D-17** | 插件机制 | **`plugin.json` 清单 + .NET 程序集 + `AssemblyLoadContext` 隔离**；插件只引用 `SiliconDraft.PluginApi` | Python Entry Points / `plugin.py` |
 | **D-18** | 第一期格式范围 | CP → **STDF**；WAT → **AD5**；另提供 `csv` 内置插件仅供调试。**不做 YMS 归属识别** | 全格式一次性交付 |
+| **D-19** | 第三方依赖许可基线 | **只接受 MIT / Apache-2.0 / BSD 等宽松许可**。排除 `Avalonia.Controls.TreeDataGrid`（自 11.2.0 起需 Avalonia Accelerate 商业许可）与 `FluentAssertions` 8.x（Xceed 商业许可）；测试断言库用 `AwesomeAssertions`（Apache-2.0） | TreeDataGrid；FluentAssertions 8.x |
 
 
 > **拆分说明**：`D-01`（语言与运行时）、`D-03`（GUI 框架）、`D-04`（图表库）、`D-16`（存储引擎）、`D-17`（插件机制）为**技术选型**，仅约束本文档；`D-02`、`D-05`~`D-15`、`D-18` 为**产品行为或交付形态**，其需求表述见需求册 §0.4 与 §2、§4、§6 各章。`D-09` 为已撤销方案，保留供避免重复提出。
@@ -88,7 +89,7 @@
 | 归档 / 暂存 | **Parquet** | 只读多实例共享；分区目录规范 |
 | YAML | **YamlDotNet** | 配置文件、预设、节点包、测试项库 |
 | JSON Schema | **JsonSchema.Net** + **JsonSchema.Net.Generation** | 配置校验 + 模板生成 + GUI 表单 |
-| 测试 | **xUnit** + FluentAssertions + **Verify**（金标准快照）+ BenchmarkDotNet + coverlet | 见 §11.3 |
+| 测试 | **xunit.v3** + **AwesomeAssertions** + **Verify**（金标准快照）+ BenchmarkDotNet + coverlet | 见 §11.3；FluentAssertions 8.x 因 Xceed 许可排除（D-19） |
 | 打包 | `dotnet publish`（self-contained 单文件 + ReadyToRun） | 6 个 RID |
 
 > 完整包选型表（含许可）见 §16.2。
@@ -104,7 +105,7 @@
 | UI 框架 | Avalonia 12.x |
 | MVVM 框架 | CommunityToolkit.Mvvm 8.x |
 | 依赖注入 / 宿主 / 配置 / 日志 | Microsoft.Extensions.* + Serilog |
-| 表格 | `Avalonia.Controls.DataGrid`（明细表）+ `Avalonia.Controls.TreeDataGrid`（层级导航），两者均需**开启虚拟化** |
+| 表格 | `Avalonia.Controls.DataGrid`（明细表）+ 层级导航使用 MIT 许可的虚拟化控件或自绘；两者均需**开启虚拟化**。`TreeDataGrid` 因 Avalonia Accelerate 商业许可排除（D-19），具体替代方案由 #14 定 |
 | 统计图表 | OxyPlot.Avalonia + OxyPlot.SkiaSharp |
 | Wafer Map | SkiaSharp 自绘自定义控件 |
 | 主题 | Avalonia `FluentTheme`（浅色 / 深色），必须跟随系统并可手动切换 |
@@ -164,9 +165,9 @@
 | --- | --- | --- | --- |
 | UI 框架 | `Avalonia` 12.x | MIT | 需 .NET 8 SDK+（本项目 .NET 10） |
 | MVVM | `CommunityToolkit.Mvvm` | MIT | 源生成器；备选 `Avalonia.ReactiveUI` |
-| 表格 | `Avalonia.Controls.DataGrid`、`Avalonia.Controls.TreeDataGrid` | MIT | TreeDataGrid 适合层级导航 |
+| 表格 | `Avalonia.Controls.DataGrid` | MIT | 明细表；`TreeDataGrid` 因需 Avalonia Accelerate 商业许可**排除**（D-19） |
 | 统计图表 | `OxyPlot.Avalonia`、`OxyPlot.SkiaSharp` | MIT | SkiaSharp 包提供 PNG/SVG 导出 |
-| 2D 图形 | `SkiaSharp`（Avalonia 已传递依赖） | MIT | 自绘 Wafer Map |
+| 2D 图形 | `SkiaSharp`（版本必须与 `Avalonia.Skia` 对齐，Avalonia 12.1.4 → SkiaSharp 3.119.4） | MIT | 自绘 Wafer Map；禁止跨大版本（如 4.x）直接引用 |
 | 宿主 / DI / 配置 | `Microsoft.Extensions.Hosting`、`.DependencyInjection`、`.Configuration.*` | MIT | GUI 与 CLI 共用 |
 | 日志 | `Microsoft.Extensions.Logging` + `Serilog` + `Serilog.Formatting.Compact` + `Serilog.Sinks.File` | MIT / Apache-2.0 | JSON Lines 轮转日志 |
 | CLI 解析 | `System.CommandLine` | MIT | — |
@@ -185,9 +186,10 @@
 | 文件锁 | `FileStream` 带 `FileShare.None` + **自研锁文件与心跳机制** | MIT (BCL) | 跨平台文件锁差异较大，建议以应用层锁为主，OS 锁为辅（`SD-EXT-101`） |
 | 回收站 / 垃圾箱 | 平台相关：Windows `SHFileOperation`/`IFileOperation`、macOS `NSFileManager.TrashItem`、Linux Freedesktop Trash 规范 | — | **无统一跨平台库**，需自研薄封装 + 降级路径（`extra/trash/`） |
 | 状态机 | 自研（枚举 + 显式转移表） | — | 工作簿状态机不复杂，**不引入第三方状态机库** |
-| 单测 | `xUnit`、`FluentAssertions` | Apache-2.0 / MIT | — |
+| 单测 | `xunit.v3`、`AwesomeAssertions` | Apache-2.0 | FluentAssertions 8.x 为 Xceed 商业许可，排除（D-19）；`xunit.v3` 走 Microsoft.Testing.Platform |
+| GUI 测试 | `Avalonia.Headless` | MIT | ViewModel 单测；不引 `Avalonia.Headless.XUnit`（其钉 `xunit.v3.extensibility.core 3.2.2`，与 xunit.v3 4.x 有版本错配风险） |
 | 快照 / 金标准测试 | `Verify`（VerifyTests） | MIT | 适合 STDF / AD5 / CSV 产物的金标准比对 |
-| 架构测试 | `ArchUnitNET` 或自研 xUnit 断言 | Apache-2.0 | 强制依赖方向与隔离约束 |
+| 架构测试 | `TngTech.ArchUnitNET` + `TngTech.ArchUnitNET.xUnitV3`，辅以 xUnit 元数据 / 进程断言 | Apache-2.0 | 强制依赖方向与隔离约束；三层机制见 ADR-0001 |
 | 性能基准 | `BenchmarkDotNet` | MIT | `SD-SCL-085` |
 | 覆盖率 | `coverlet` | MIT | — |
 | 模拟 / 桩 | `NSubstitute` 或 `Moq` | BSD / MIT | — |
@@ -210,7 +212,7 @@
 
 ```
 SiliconDraft.sln
-├── Directory.Build.props            # 统一 TFM / LangVersion / Nullable / TreatWarningsAsErrors
+├── Directory.Build.props            # 统一 LangVersion / Nullable / 分析策略（TFM 由各 csproj 声明）
 ├── Directory.Packages.props         # 中央包版本管理（CPM）
 ├── src/
 │   ├── SiliconDraft.PluginApi/      # ★ 插件契约程序集（极薄，仅接口 + DTO）
@@ -241,7 +243,10 @@ SiliconDraft.sln
     ├── SiliconDraft.Plugins.Tests/  # 含 Verify 金标准快照测试
     ├── SiliconDraft.Gui.Tests/      # ViewModel 层单测（headless）
     ├── SiliconDraft.E2E.Tests/      # 端到端：建工作簿 → 生成 → 入库 → 查询 → 导出 → 校验 → 存盘 → 重开
-    └── SiliconDraft.Benchmarks/     # BenchmarkDotNet 性能基准
+    ├── SiliconDraft.Architecture.Tests/ # 铁律断言：IL / 元数据 / 子进程（ADR-0001）
+    ├── SiliconDraft.Benchmarks/     # BenchmarkDotNet 性能基准
+    └── fixtures/
+        └── SiliconDraft.BadPlugin/  # 构建夹具：引用 Core 的错误插件（SD-NFR-097）
 ```
 
 **运行期目录布局**
@@ -280,9 +285,13 @@ SiliconDraft.sln
 
 **SD-SYS-181**（MUST）：`SiliconDraft.Core` 的项目文件中**禁止出现** `Avalonia*`、`System.CommandLine`、`Spectre.Console` 等 UI / 终端类包引用。必须通过架构测试（`ArchUnitNET` 或自定义 xUnit 断言）在 CI 中强制校验，违反即构建失败（§11.2）。
 
+> 强制机制见 **ADR-0001**：IL 层（ArchUnitNET）、元数据层（csproj / `deps.json`）、进程层（子进程探针）三层缺一不可。
+
 **SD-SYS-182**（MUST）：`Core` 向表现层汇报进度与状态的唯一通道是**抽象接口**（`IProgress<T>`、`Channel<T>`、`CancellationToken`），禁止 `Core` 中出现任何 UI 线程调度、`Dispatcher`、事件订阅等 UI 概念。
 
 **SD-SYS-183**（MUST）：GUI 与 CLI **必须共用同一个 `IHost` 构建过程**（`HostBuilder` + 统一的 `ConfigureServices` / `ConfigureAppConfiguration` / `ConfigureLogging` 扩展方法），差异只能通过"是否注册 UI 相关服务"体现。禁止在 GUI 与 CLI 中各自 `new` 一套服务或各自解析配置。
+
+> ADR-0001 规定：组合根 `HostBootstrap` 是**唯一**构造 `HostApplicationBuilder` 的类型；共享构建方法与 `Program` / `CliEntry` 不得出现 Avalonia 类型引用（JIT 边界）。
 
 
 ---
@@ -506,7 +515,7 @@ public static int Main(string[] args)
 }
 ```
 
-**SD-SYS-171**（MUST）：CLI 路径必须通过**独立的类型与方法边界**实现（`CliEntry` 不得引用任何 Avalonia 类型），以保证 JIT 不在 CLI 场景加载 Avalonia 程序集、不产生 GUI 初始化开销。必须有性能测试证明 CLI 冷启动达标（§10.3）。
+**SD-SYS-171**（MUST）：CLI 路径必须通过**独立的类型与方法边界**实现（`CliEntry` 不得引用任何 Avalonia 类型），以保证 JIT 不在 CLI 场景加载 Avalonia 程序集、不产生 GUI 初始化开销。必须有性能测试证明 CLI 冷启动达标（§10.3）。**注意**：.NET 的 JIT 在编译方法时会解析方法体内出现的类型引用，即使对应分支未执行；因此 CLI 判定与 GUI 启动必须分属独立方法 / 类型，不能靠运行时 `if` 把两者放在同一个方法体内。
 
 **SD-SYS-172**（MUST）：退出码必须由 `Main` 原样返回，保证流水线可读取（§8.2.5 的 20 档退出码语义不变）。
 
@@ -1658,6 +1667,8 @@ erDiagram
 | **SD-NFR-096** | MUST | 不得使用 `async void`（除事件处理器）；不得在 UI 线程执行 IO 或计算；不得使用 `.Result` / `.Wait()` 阻塞（除 `Main` 的顶层与明确标注处） | 静态分析（Roslyn 分析器 + `TreatWarningsAsErrors`） |
 | **SD-NFR-097** | MUST | 插件只能引用 `SiliconDraft.PluginApi`；必须有测试加载一个"引用了 Core 的错误插件"并断言被拒绝加载且不影响启动 | 自动化 |
 | **SD-NFR-130** | MUST | §2.7 的隔离约束（`SD-SYS-270a`~`270d`）必须由架构测试或 GUI 代码审查确认：全局只有一个 `WorkbookSession`；`IConnectionManager` 无附加外部库的方法；查询服务入参不含第二个工作簿标识；不存在多标签 / 多窗口多开路径 | 自动化 + 人工审查 |
+
+> 架构断言的实现方式与工程位置见 **ADR-0001**：`tests/SiliconDraft.Architecture.Tests/` 负责 IL 层、元数据层与进程层断言；`tests/fixtures/SiliconDraft.BadPlugin/` 是 `SD-NFR-097` 的构建夹具。
 
 
 ### 11.2 代码规范与静态分析
