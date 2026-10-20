@@ -1,7 +1,8 @@
 # ADR-0001：架构铁律的强制与测试机制
 
 - **状态**：已接受（2026-10-20）
-- **相关需求**：`SD-SYS-170`、`SD-SYS-171`、`SD-SYS-180`、`SD-SYS-181`、`SD-SYS-183`、`SD-GUI-011`、`SD-GUI-013`、`SD-NFR-095`、`SD-NFR-097`
+- **相关需求**：`SD-GUI-011`、`SD-GUI-013`（需求册 §5）
+- **相关设计约束**：`SD-SYS-170`、`SD-SYS-171`、`SD-SYS-180`、`SD-SYS-181`、`SD-SYS-183`、`SD-NFR-095`、`SD-NFR-097`（设计册沿用编号）
 - **相关设计**：`doc/design.MD` §2.1、§2.2、§4.1、§11.1
 - **来源**：issue #5
 
@@ -28,7 +29,7 @@
 | 层 | 工具 | 覆盖 |
 | --- | --- | --- |
 | IL | `TngTech.ArchUnitNET 0.13.4` + `TngTech.ArchUnitNET.xUnitV3 0.13.4` | 类型依赖、方法体调用、程序集 `ReferencedAssemblyNames` |
-| 元数据 | 普通 xUnit + `XDocument` / `JsonDocument` | csproj 直接引用、`deps.json` 传递依赖图（含未使用的包引用） |
+| 元数据 | 普通 xUnit + `XDocument` / `JsonDocument` | csproj 直接引用；**Core** 的 `deps.json` 传递依赖图（含未使用的包引用）。**Gui 只检查直接引用，不对 `deps.json` 查 DuckDB**——经 Core 传递必然存在 |
 | 进程 | 独立子进程 + 环境变量触发的已加载程序集 dump | 运行时动态加载；CLI 路径的进程洁净性 |
 
 三层互补，缺一不可。不允许只写几条 ArchUnitNET Fluent 规则就认为铁律已被强制。
@@ -43,7 +44,7 @@
 
 ### 2. `Architecture.Tests` 工程
 
-新增 `tests/SiliconDraft.Architecture.Tests/`，引用全部产品程序集（用于构建顺序与输出复制），但用 `LoadFilteredDirectory` 通过 Cecil 读取，不把目标程序集反射加载进测试进程。工程职责：
+新增 `tests/SiliconDraft.Architecture.Tests/`，引用全部产品程序集（用于构建顺序与输出复制）；**IL 与元数据断言**用 `LoadFilteredDirectory` 通过 Cecil 读取，不把目标程序集反射加载进测试进程。运行时共用性断言（§3）按正常引用加载 `App`，会连带加载 `Gui` / Avalonia，这是该断言的目的。工程职责：
 
 - IL 层与元数据层断言；
 - `HostBootstrap` 的运行时共用性断言（见下）；
@@ -77,7 +78,7 @@
 - `SiliconDraft.App` 增加约 20 行仅在测试环境激活的诊断代码；这是为可观测的进程级铁律付出的最小代价。
 - 架构测试需要额外构建一次 App 并启动子进程；相对整个测试套件可忽略。
 - 新增铁律或依赖方向规则时，必须同时补 IL 与元数据两层断言（以及必要时的进程断言），不能只加一条 Fluent 规则。
-- `Architecture.Tests` 与 `BadPlugin` 夹具使设计册 §2.1 的工程清单从 5 个测试工程变为 6 个 + 1 个构建夹具；已回写。
+- `Architecture.Tests` 与 `BadPlugin` 夹具已回写设计册 §2.1。该节是**终态**工程清单：测试工程从 5 个变为 6 个 + 1 个构建夹具；**切片**实际建 5 个测试工程（不含 `Benchmarks`），完整清单见 issue #5。
 
 ## 已否决的备选
 

@@ -70,7 +70,7 @@
 | **D-19** | 第三方依赖许可基线 | **只接受 MIT / Apache-2.0 / BSD 等宽松许可**。排除 `Avalonia.Controls.TreeDataGrid`（自 11.2.0 起需 Avalonia Accelerate 商业许可）与 `FluentAssertions` 8.x（Xceed 商业许可）；测试断言库用 `AwesomeAssertions`（Apache-2.0） | TreeDataGrid；FluentAssertions 8.x |
 
 
-> **拆分说明**：`D-01`（语言与运行时）、`D-03`（GUI 框架）、`D-04`（图表库）、`D-16`（存储引擎）、`D-17`（插件机制）为**技术选型**，仅约束本文档；`D-02`、`D-05`~`D-15`、`D-18` 为**产品行为或交付形态**，其需求表述见需求册 §0.4 与 §2、§4、§6 各章。`D-09` 为已撤销方案，保留供避免重复提出。
+> **拆分说明**：`D-01`（语言与运行时）、`D-03`（GUI 框架）、`D-04`（图表库）、`D-16`（存储引擎）、`D-17`（插件机制）、`D-19`（第三方依赖许可基线）为**技术选型**，仅约束本文档；`D-02`、`D-05`~`D-15`、`D-18` 为**产品行为或交付形态**，其需求表述见需求册 §0.4 与 §2、§4、§6 各章。`D-09` 为已撤销方案，保留供避免重复提出。
 
 ### 1.2 技术栈总览
 
@@ -249,6 +249,8 @@ SiliconDraft.sln
         └── SiliconDraft.BadPlugin/  # 构建夹具：引用 Core 的错误插件（SD-NFR-097）
 ```
 
+> **切片范围**：切片只建 6 个 `src` + 5 个 `tests`（`Core` / `Plugins` / `Gui` / `E2E` / `Architecture`）+ `tests/fixtures/SiliconDraft.BadPlugin`；`Plugins.Ad5` / `Plugins.Csv` / `Sdk` / `Benchmarks` 不在切片。完整 csproj / TFM / 引用 / props / packages 清单见 issue #5 的裁决评论。
+
 **运行期目录布局**
 
 ```
@@ -283,7 +285,7 @@ SiliconDraft.sln
 | `Core` → `PluginApi`（仅契约） | `Core` → 任何插件的**实现**程序集 |
 | `Plugins.*` → `PluginApi`（仅契约） | 插件 → `Core` |
 
-**SD-SYS-181**（MUST）：`SiliconDraft.Core` 的项目文件中**禁止出现** `Avalonia*`、`System.CommandLine`、`Spectre.Console` 等 UI / 终端类包引用。必须通过架构测试（`ArchUnitNET` 或自定义 xUnit 断言）在 CI 中强制校验，违反即构建失败（§11.2）。
+**SD-SYS-181**（MUST）：`SiliconDraft.Core` 的项目文件中**禁止出现** `Avalonia*`、`System.CommandLine`、`Spectre.Console` 等 UI / 终端类包引用。必须通过架构测试在 CI 中强制校验，违反即构建失败（§11.2）；具体采用 **IL（ArchUnitNET）+ 元数据（csproj / `deps.json`）+ 进程（子进程探针）** 三层组合，见 ADR-0001。
 
 > 强制机制见 **ADR-0001**：IL 层（ArchUnitNET）、元数据层（csproj / `deps.json`）、进程层（子进程探针）三层缺一不可。
 
