@@ -26,6 +26,8 @@
 
 **SD-SYS-212**（MUST）：`nodes/` 中必须固化本次生成所用的**节点包快照**。理由：全局 `nodes/` 目录可能被升级或删除，而工作簿必须能独立重放。存储成本低（YAML 文本）。
 
+**条目存在性（实现规则）**：上表 `○` 表示**按需创建**，不要求工作簿创建时即存在。`INV-5` 只禁止**未声明的**顶层条目，**不要求**已声明的条目全部存在；`workbook verify` 不得因缺少 `logs/`、`exports/` 等按需目录而报错。
+
 
 ### 节点包（nodepack）的交付形态
 
@@ -106,6 +108,8 @@
 | `counts` / `defectsApplied` | 便于**不打开库**即可读取（MRU 与 `workbook list` 的性能关键） |
 | `externalExports` | 记录落在工作簿之外的导出产物，供 `workbook verify` 报告 |
 | `checksums` | `workbook.duckdb` 的校验和；**仅在 `pack` / `save-as` / 显式 `workbook seal` 时写入**（日常生成不重算，避免每次关闭都付大文件哈希开销） |
+
+**清单的读写兼容规则**：每次写入必须输出**完整字段形状**——未赋值的字段写 `null`、空集合写 `[]`，禁止省略字段；读取必须忽略未知字段，缺失字段取默认值。`schemaVersion` 高于当前实现支持的版本时必须拒绝打开（`ERR_WORKBOOK_INVALID`），不得按默认值猜测。这样旧版本读新清单不会因缺字段失败，新版本读旧清单也能取得完整默认值。
 
 **摘要缓存的失效与刷新**：`modifiedAt > cachedAt` 或 `state ∈ {Dirty, Incomplete}` 时，**任何展示该工作簿摘要的地方**（起始页 MRU 条目、`workbook info`、`workbook list --dir` 的输出）**必须显示"统计待刷新"标记而非展示可能错误的数字**；`workbook verify` 必须校验 `summary.dieCount` 与库内 `COUNT(*)` 是否一致并对不一致给出 WARN；必须提供 `workbook rebuild-manifest <path>` 从库重建摘要。
 **MRU 与 `workbook list` 的展示必须只依赖 `workbook.json` 这一处，且必须容忍其缺失或过期，不得因此报错**（读不到清单时只显示"名称 + 路径"，不显示统计）。
