@@ -701,6 +701,42 @@ public sealed class ExportContext
 **SD-PLG-033**（MUST）：`ExportIssue` 必须包含机器可读的 `Code`（如 `ERR_STDF_NO_ITEMS`）、`Message`、`Hint`（修复建议）、`Severity`，以支撑 §11.7 的"错误信息必须附带修复建议"要求。
 
 
+### 4.5 质量检查接缝（DQ observer）
+
+> **需求侧对应**：需求册 §9 `DQ-06`、`SD-NFR-200`。`DQ-06` 的度量对象是**逐 die 物理量残差场**，而物理量值不入库（`sd_cp_result_wide` 只存测试项），因此生成引擎与质量检查之间需要一个**进程内、单向、流式**的接缝；不新增表、不落盘。
+
+```csharp
+namespace SiliconDraft.Core.Quality;
+
+public interface IQualityObserver
+{
+    void OnQuantityFieldEvaluated(in QuantityFieldSample sample);
+}
+
+public readonly record struct QuantityFieldSample(
+    string LotId,
+    string WaferId,
+    string QuantityId,
+    ReadOnlyMemory<DieSample> Dies);
+
+public readonly record struct DieSample(
+    string DieId,
+    double XMm,
+    double YMm,
+    double Value,
+    bool IsTested,
+    bool IsDefectHit);
+```
+
+| 约束 | 规定 |
+| --- | --- |
+| 调用时机 | 每个 `(wafer, 物理量)` 的场求值（含缺陷影响）完成后、测试项推导之前 |
+| 消费者 | `Dq06Checker` 实现 `IQualityObserver`，边收边算；生成结束时由 `IQualityRunner` 汇总并写 `sd_dq_result` |
+| 生命周期 | 只覆盖本次生成；对已存档数据集重跑 DQ 时无证据源，`DQ-06` 记为 `SKIP` 并给出提示 |
+| 可见性 | `Core` 内部接缝，不进入 `PluginApi`，插件不可见 |
+| 内存 | O(单个 `(wafer, 物理量)`)，不保留运行级全量样本 |
+
+
 ---
 
 ## 5. 存储设计
@@ -1166,8 +1202,9 @@ export:
 
 ### 7.1 空间场模型
 
+> **编号说明**：本节原用 `SD-GEN-070`~`073`，这些编号已在需求册 2026-10-14 的改写中被 `SD-GEN-074`~`077` 取代（编号不复用）。以下实现说明引用**现行需求编号**，不再另立需求编号。
 
-**SD-GEN-070**（MUST）：每个物理量在 wafer 平面上的分布由以下成分线性叠加（默认权重可配置）（原 `FR-6.2`）：
+**空间场模型**（实现 `SD-GEN-074`）：每个物理量在 wafer 平面上的分布由以下成分线性叠加（默认权重可配置）：
 
 ```
 P(x, y) = μ_P                          # 全局均值偏移（lot / wafer 级）
@@ -1185,11 +1222,19 @@ P(x, y) = μ_P                          # 全局均值偏移（lot / wafer 级�
 | `γ, L` | 空间平滑随机场：颗粒 / 工艺微区 | γ 略大于 die 噪声 |
 | `ε` | die 级微观噪声：随机测量误差 | σ = 目标 sigma 的一部分 |
 
-**SD-GEN-071**（MUST）：**成分振幅按 wafer 抽取**（wafer 间变化），而**场形在单 wafer 内保持自洽** —— 这是制造 wafer 间相关性能被检出的前提（原 `FR-6.3`）。
+**成分振幅**（实现 `SD-GEN-075`）：各成分振幅按 wafer 抽取（wafer 间变化），场形在单 wafer 内保持自洽。为保证 `DQ-06` 余量，逐 wafer 平滑场振幅必须满足 **`γ_w ≥ 0.8 · γ_nom`**。
 
-**SD-GEN-072**（MUST）：必须提供"**关闭平滑场、仅保留 die 级独立噪声**"的开关，用于生成对照组（验证 YMS 是否会误报相关）（原 `FR-6.4`）。
+**对照能力**（实现 `SD-GEN-076`）：
 
-**SD-GEN-073**（MUST）：平滑随机场 `L(x,y)` 的实现必须产生**具备期望空间自相关**的场 —— 验收门限为 Moran's I > 0.3（对应 `DQ-06`）。推荐用 FFT 谱合成（Gaussian random field），退化方案为 Perlin / Simplex 噪声叠加。
+- `smooth_random_field.enabled=false` **只关闭 `L`**，径向 / 扇区按各自开关保留；这是 `DQ-06` 的特异性夹具，关闭后 `DQ-06` 必须 FAIL。
+- `P-NO-SPATIAL` 预设关闭全部空间成分、CP↔WAT 联动与缺陷注入，仅保留 die 噪声；这是 YMS 误报对照，`DQ-06` 必须 FAIL。
+
+**平滑随机场实现**（实现 `SD-GEN-077`）：`L(x,y)` 是目标协方差 `C(r) = exp(−r² / 2ℓ²)` 的高斯随机场，默认用 FFT 谱合成（circulant embedding），退化方案为 Perlin / Simplex 噪声叠加。实现约束：
+
+- `l_corr_mm ≥ 0.8 × die_pitch_mm`（过 `DQ-06` 的必要条件）；
+- **`ε/γ ≤ 1.0`**：由 `I_res ≈ I_L / (1 + (ε/γ)²)`、`I_L ≈ 0.95` 得残差场 I ≈ 0.48；再叠加 `γ_w ≥ 0.8γ_nom` 仍有 I ≈ 0.37，留出余量。原调研的 `ε ≤ 1.4γ` 是贴线值（I ≈ 0.32），不作为设计值；
+- `h = box/n ≤ ℓ/2`；`box ≥ 2R + 4ℓ`（避免周期回绕）；
+- `MathNet.Numerics` 的 provider 必须钉 `Mathematics.FourierTransformControl.UseManaged()`；**不得使用 `Inverse2D`**（托管 provider 无 2-D FFT），二维按行 / 列手工分解。
 
 
 ### 7.2 物理量 → 测试项推导
@@ -1246,6 +1291,29 @@ MISMATCH_CV = K_φ·grad_mag·leff / √Area
 **SD-GEN-196**（MUST）：数值输出必须统一舍入到配置的 `precision`（默认按测试项 `unit` 自适应：mV→3 位，uA→4 位，ohm/sq→4 位）（原 `FR-22.5`）。**这是跨平台/跨 RID 输出字节级一致的前提之一**（见 §11.1 `SD-NFR-010`）。
 
 **SD-GEN-198**（MUST）：导出文件的时间字段必须由 `run.generated_at` + 确定性测试时长推导，**不得使用墙钟时间**；具体映射见 `contracts/formats/stdf.MD` `SD-FMT-022`。`run.generated_at` 为空时才允许退回任务启动时间，此时不满足 `SD-GEN-192` / `DQ-16`，必须在 `export_manifest.json` 标记 `time_source: "wall_clock"`。
+
+
+### 7.4 DQ-06 残差算法
+
+> **需求侧对应**：需求册 §9 `DQ-06`、§3.3.2 `SD-GEN-077`。输入为 §4.5 的 `IQualityObserver` 推送的逐 die 物理量样本。
+
+**去趋势**：对每个 `(wafer, 物理量)`，在有效 die 集合上做最小二乘拟合：
+
+```
+v(x,y) ≈ c0 + Σ_{k=1..4} c_k (r/R)^k
+        + Σ_{m=1..4} [a_m cos(mθ) + b_m sin(mθ)]
+```
+
+残差 `e = v − v̂`。**不剥离** die 级噪声 `ε`：白噪声对 I 的稀释属于"可被统计检出"的一部分。
+
+| 约束 | 规定 |
+| --- | --- |
+| 有效 die | `IsTested && !IsDefectHit` 且 `Value` 有限；`n ≥ 100`，否则该 `(wafer, 物理量)` 记 `SKIP` |
+| 基函数 | 径向 4 阶 + 角向 4 阶。`L` 的相关长度 ≥ 0.8 × die pitch，角向模态约 `R/ℓ ≈ 20`，低阶基函数吸收的方差可忽略；用回归测试锁定"拟合前后 I 的变化" |
+| 权重 | `rook4`：上下左右边相邻；`queen8`：8 邻域（含对角） |
+| 统计量 | `I = (n / S0) · ΣΣ w_ij (e_i − ē)(e_j − ē) / Σ (e_i − ē)²`，`S0 = ΣΣ w_ij`；边界 die 的邻居缺失时按实际度数计算，`(n/S0)` 归一化处理度不齐 |
+| 判定 | 每个 `(wafer, 物理量)` 在两种权重下均须 `I > 0.3` |
+| 记录 | `sd_dq_result.measured` 记逐 wafer 的 I（rook4 / queen8）、`n` 与排除数；`detail` 记失败项与修复建议（如"检查 `γ` / `ε` 配置比是否超过 1.0"） |
 
 
 ---
@@ -1632,7 +1700,7 @@ erDiagram
 | **SD-EXT-101** | MUST | **工作簿生命周期与锁的健壮性** | ① 跨进程锁与失效锁检测（含 PID 复用与跨主机场景）；② 随机时刻 `SIGKILL` 后的可恢复性；③ 三平台上的文件锁行为差异（Windows 独占 vs POSIX 建议锁）；④ `File.Move` 原子替换在三平台的表现；⑤ 回收站机制在三平台的可用性与降级路径 | Windows 与 POSIX 差异过大 ⇒ 统一改为"锁文件 + 心跳"的**纯应用层锁**，接受更弱的互斥保证但更强的跨平台一致性；无回收站 ⇒ 降级为 `extra/trash/` 软删除 + 定期清理 |
 | **SD-EXT-102** | MUST | Avalonia + SkiaSharp 自绘 Wafer Map | 5,000 Die 下的缩放 / 平移帧率、tooltip、缺失 / 部分 Die 渲染、中文文本渲染 | 帧率不达标 ⇒ 引入位图缓存（按缩放级别预渲染）+ 分层绘制 |
 | **SD-EXT-103** | MUST | C# 实现 STDF Writer | 记录结构（`FAR` 首条 / `MRR` 末条 / 配对不变式）、计数记录一致性、整文件 gzip、字节序、第三方解析器可读 | 第三方解析器拒绝 ⇒ 逐字段对齐 STDF V4 规范并用外部工具定位差异 |
-| **SD-EXT-104** | MUST | FFT 谱合成空间场 + MathNet 数值 | 生成的场是否具有期望的空间自相关（Moran's I > 0.3）；性能是否满足 | 谱合成实现复杂 ⇒ 退化为 Perlin / Simplex 噪声叠加（质量略降但可控） |
+| **SD-EXT-104** | MUST | FFT 谱合成空间场 + MathNet 数值 | 生成的场是否具有期望的空间自相关（`DQ-06`：残差场 Moran's I > 0.3）；性能是否满足 | 谱合成实现复杂 ⇒ 退化为 Perlin / Simplex 噪声叠加（质量略降但可控） |
 | **SD-EXT-105** | MUST | AssemblyLoadContext 插件隔离 | 外部 DLL 被发现、加载、卸载重载、异常隔离、`PluginApi` 类型统一 | 卸载不可靠 ⇒ 放弃热重载，改为重启生效（功能不受影响） |
 | **SD-EXT-106** | MUST | 跨 RID 输出一致性 | 6 个 RID 上相同配置种子的输出是否字节级相同；跨 RID 拷贝工作簿目录后重放 | 浮点差异不可消除 ⇒ 输出全部经 `precision` 舍入并在序列化层统一 |
 | **SD-EXT-107** | SHOULD | OxyPlot 在 Avalonia 12 上的集成 | 系列类型、导出 PNG/SVG、深色主题、中文字体 | 某系列缺失 ⇒ 用自绘补充该图表 |
@@ -1795,7 +1863,7 @@ physics:
     sector_term: { enabled: true, amplitude: 0.1 }
     smooth_random_field: { enabled: true, method: fft_spectral }
     die_noise: { enabled: true }
-  # 关键开关：关闭平滑场，仅保留 die 级独立噪声 → 生成"无空间相关"的对照组
+  # 单成分开关：只关闭平滑场 L；径向 / 扇区按各自开关保留（DQ-06 特异性夹具）
   disable_smooth_field: false
 
 # ============ 缺陷注入 ============
