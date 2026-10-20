@@ -79,9 +79,9 @@
 | **Site** | 测试机的一个测试通道位；同一批次可并行测试多 site |
 | **Bin** | 良率分档（Pass/Fail 分档编号）；分 Hard Bin（硬失效）与 Soft/Func Bin（功能分档） |
 | **Limit** | 测试限值：`LSL`/`USL` 规格硬限，`LSL_Warn`/`USL_Warn` 预警软限，`Target` 目标值 |
-| **STDF** | Standard Test Data Format，SEMI 标准测试数据格式（E10 规范） |
+| **STDF** | Standard Test Data Format，半导体测试数据交换格式。v1 写经典 V4（Teradyne 规范，2010 年起由 SEMI 托管）；**SEMI E10 是设备 RAM 标准，与 STDF 无关** |
 | **AD5** | 代工厂/客户侧的 WAT（PCM/ET）表格型数据交换格式（**规格待冻结**，见 SD-Q-003） |
-| **PTR / HDR / SMR / PIR / WIR / HBR / PCR / MRR / GDR / DIE** | STDF 记录类型（详见 §6.7） |
+| **FAR / MIR / WIR / WRR / PIR / PTR / PRR / PCR / MRR / WCR / HBR / TSR** | STDF 记录类型（v1 使用的记录集；详见 `doc/contracts/formats/stdf.MD`） |
 | **YMS** | Yield Management System，良率管理系统 |
 | **Floor Plan** | 芯片在 wafer 上的排布规则（Full / Partial / Circle / SAW） |
 | **Notch / Flat** | 晶圆定位缺口 / 平边 |
@@ -783,7 +783,7 @@ defects:
 | --- | --- | --- |
 | **SD-GEN-197a** | MUST | 所有随机数必须来自**显式种子管理**，禁止使用隐式全局随机状态 |
 | **SD-GEN-197b** | MUST | 必须支持**分层种子派生**，使**分片并行与单进程串行的结果字节级一致** |
-| **SD-GEN-197c** | MUST | 相同 `seed` + 相同配置 + 相同工具版本 → 输出**字节级一致**（含数据存储内容与导出文件校验和） |
+| **SD-GEN-197c** | MUST | 相同 `seed` + 相同配置（含固定 `run.generated_at`）+ 相同工具版本 → 输出**字节级一致**（含数据存储内容与导出文件校验和） |
 | **SD-GEN-197d** | MUST | **同一配置拆成一个大工作簿或 N 个工作簿，对应 Lot/Wafer 的数据必须完全一致**。种子派生**不得依赖工作簿标识** |
 | **SD-GEN-197e** | MUST | 必须提供种子重置策略：**固定 / 按 Lot 递增 / 从清单读取** |
 | **SD-GEN-197f** | MUST | 数值输出必须统一舍入到配置的精度（默认按测试项单位自适应）。**这是跨平台输出字节级一致的前提之一**（见 §11.2 `SD-NFR-054`） |
@@ -796,7 +796,7 @@ defects:
 | 字段 | 说明 |
 | --- | --- |
 | `silicondraft_version` | 生成器版本号 |
-| `timestamp_utc` | 生成时间（ISO 8601） |
+| `timestamp_utc` | 生成时间（ISO 8601）；优先取 `run.generated_at`，为空时取实际生成时间 |
 | `config_full` / `config_hash` | 完整配置深拷贝 + SHA-256 配置哈希（判定两次生成是否同源） |
 | `random_seed` / `derived_seeds` | 主随机种子与各模块派生的子种子 |
 | `test_items` | 完整测试项清单（含 limit、unit、type、derived_from） |
@@ -1433,11 +1433,11 @@ defects:
 
 | 编号 | 强度 | 需求 |
 | --- | --- | --- |
-| **SD-PLG-018a** | MUST | 第一期 CP 导出**仅支持 STDF**（SEMI E10）；其他 CP 格式（ATDF、CSV 模板等）延后 |
+| **SD-PLG-018a** | MUST | 第一期 CP 导出**仅支持 STDF V4**（Teradyne 规范，2010 年起由 SEMI 托管；写 `STDF_VER=4`）；其他 CP 格式（ATDF、CSV 模板等）延后 |
 | **SD-PLG-018b** | MUST | 第一期 WAT 导出**仅支持 AD5**；其他 WAT 格式延后 |
 | **SD-PLG-018c** | MUST | 第一期**不考虑 YMS 归属识别**（§0.7 `SD-SYS-150`）：不写入任何归属判定所需的自定义标识；不实现"归属冲突 / 归属推断"相关逻辑 |
 | **SD-PLG-018d** | MUST | 第一期除 STDF/AD5 外，额外提供一个 `csv` 内置插件用于自检与调试（**不纳入对外格式承诺**） |
-| **SD-PLG-018e** | SHOULD | 第二期起再考虑：STDF 的 E5/X8/X14 变体、AD5 变体、CSV 模板族、Parquet、JSON、XLSX、HTML |
+| **SD-PLG-018e** | SHOULD | 第二期起再考虑：STDF V4-2007（需写 `VUR`）、AD5 变体、CSV 模板族、Parquet、JSON、XLSX、HTML |
 
 
 ### 6.7 格式校验、追溯与对照
@@ -1451,12 +1451,12 @@ defects:
 
 | 校验项 | 说明 |
 | --- | --- |
-| STDF 结构 | 记录链完整性（`NEXT_REC` 一致、无截断）、`HDR` 计数与实际一致、`PTR` 必在某个 `PIR` 之后、数值字段长度与 `data_type` 匹配、`HDR` 唯一且位于文件首、`MRR` 唯一 |
-| STDF 语义 | `WIR.WAFER_ID` / `SMR.LOT_ID` 与文件名模板渲染值一致、`TEST_FLG` 位语义正确、不存在 `NaN` |
+| STDF 结构 | 记录链完整性（`REC_LEN` 与实际负载一致、无截断）；`FAR` 唯一且位于首条、`MIR` 紧随其后、`MRR` 唯一且位于末条；`WIR`/`WRR` 成对、`PIR`/`PRR` 成对且 `PTR` 落在对应 `PIR`/`PRR` 之间；计数记录（`PCR`/`WRR`/`HBR`/`SBR`/`TSR`）与实际数据一致；字段长度与规范类型匹配（无 `data_type` 配置） |
+| STDF 语义 | `WIR.WAFER_ID` / `MIR.LOT_ID` 与文件名模板渲染值一致、`TEST_FLG` 位语义正确、不存在 `NaN` |
 | AD5 结构 | 行数与结构数 × 启用参数数一致、`(LOT,WAFER,SITE,KEY,PARAM)` 唯一、数值可解析、编码与分隔符可回读 |
 | 交叉一致性 | 同 Wafer 的 CP 与 WAT 坐标系统一致；同一数据的 CSV / STDF / AD5 三者 limit 一致（对应 `DQ-19`） |
 
-**SD-FMT-041**（MUST）：CI 中必须额外执行**外部交叉校验**：在 CI 环境（允许安装额外的第三方工具）使用**外部第三方解析器**对生成的 STDF 做一次独立解析并断言关键记录数与字段值。**该外部工具仅用于 CI 交叉验证，绝不作为产品运行时依赖。**
+**SD-FMT-041**（MUST）：CI 中必须额外执行**外部交叉校验**：在 CI 环境（允许安装额外的第三方工具）使用**外部第三方解析器**对生成的 STDF 做一次独立解析并断言关键记录数与字段值。**该外部工具仅用于 CI 交叉验证，绝不作为产品运行时依赖。** 推荐工具：`semi-ate-stdf`（MIT）与 `STDFParser4Net`（MIT）；**必需路径不得引入 GPL 工具**（`pystdf` 为 GPL-2.0，只能作可选的本地检查，且不随产品分发）。
 
 **SD-FMT-042**（MUST）：必须提供 `silicondraft verify --file <path> --format stdf|ad5`，且 `verify` 必须调用 `SD-FMT-040` 的**独立校验器**，而不是 Writer 内部的 `Finalize` 自检。
 
@@ -1466,7 +1466,7 @@ defects:
 
 | 格式 | 追溯方式 |
 | --- | --- |
-| STDF | ① 标准字段：`SMR` 的 job/setup 相关字段中写入工作簿名称与 `configHash` 短码（超长必须截断并记录告警）；② `strict` profile 下**只允许使用标准字段**，不得为了追溯而破坏兼容性；③ `yms_extended` profile 下可另写一条自定义 `GDR`（`TEST_TXT = SD_PROVENANCE`）承载 `workbookId` / `workbookName` / `configHash` / `preset` / 生成时间 / 工具版本；④ 无论如何，`export_manifest.json` 必须记录完整追溯信息 |
+| STDF | ① 标准字段：`MIR.JOB_NAM` 写工作簿名（超长必须截断并记录告警），`MIR.JOB_REV` 写 `configHash` 前 8 位；② v1 只有 strict 档，**只允许使用标准字段**，不得写自定义 `GDR` 或任何自定义记录；③ `workbookId` / `preset` / 生成时间 / 工具版本的完整信息写入 `export_manifest.json`；④ 无论如何，`export_manifest.json` 必须记录完整追溯信息 |
 | AD5 | 在文件级 header block 与 / 或附加列中写入工作簿名称与 `configHash`（受 `options` 控制）；若 AD5 规格不允许扩展字段，则**必须**依赖旁路的 `export_manifest.json`，并在界面中说明"本格式不支持内嵌追溯信息" |
 
 **SD-FMT-045**（MUST）：**必须明确"迁移与重放的追溯链"**：当工作簿由 `save-as` / `duplicate` / `pack-unpack` / `migrate` 产生时，`workbook.json` 与库内 `sd_workbook.derived_from` 必须保留来源信息，且该信息必须能体现在 `export_manifest.json` 的 `derivedFrom` 字段中。目的：同一批数据出现多份副本时，能判断哪份是原始、哪份是派生。
@@ -1475,11 +1475,11 @@ defects:
 
 | 数据 | 第一期格式 | 插件名 | 拆分默认 | 状态 |
 | --- | --- | --- | --- | --- |
-| CP | STDF (SEMI E10) | `stdf` | per_wafer | ✅ 第一期交付 |
+| CP | STDF V4（`STDF_VER=4`） | `stdf` | per_wafer | ✅ 第一期交付 |
 | WAT | AD5 | `ad5` | per_lot | ⚠️ 需样例冻结规格（SD-Q-003） |
 | 通用（调试） | CSV | `csv` | per_lot | ✅ 第一期交付（不对外承诺） |
 | CP/WAT | Parquet / JSON / XLSX | — | — | 📅 第二期 |
-| CP | STDF E5 / X8 / X14 变体 | — | — | 📅 第二期 |
+| CP | STDF V4-2007（需写 `VUR`） | — | — | 📅 第二期 |
 | WAT | ATDF / 其他 PCM 格式 | — | — | 📅 第二期 |
 
 ---
@@ -1770,13 +1770,13 @@ defects:
 | **DQ-12** | Limit 逻辑正确 | 所有 Fail die 至少有一个越限项 | 100% |
 | **DQ-13** | Pass 逻辑正确 | 所有 Pass die 无越限项 | 100% |
 | **DQ-14** | Wafer Map 正确 | die 坐标在晶圆圆内、编号唯一无缺失 | 100% |
-| **DQ-15** | 记录完整性 | STDF 可被第三方解析器读取；记录数与 `HDR` 计数一致 | 100% |
-| **DQ-16** | 可复现性 | 同 seed 两次生成的输出校验和 | 完全一致 |
+| **DQ-15** | 记录完整性 | STDF 可被第三方解析器读取；必需记录齐全（`FAR`/`MIR`/`PCR`/`MRR` + CP 的 `WIR`/`WRR`/`PIR`/`PTR`/`PRR`）、配对与顺序不变式成立、计数记录与实际统计一致 | 100% |
+| **DQ-16** | 可复现性 | 同配置（含固定 `run.generated_at`）+ 同 seed 两次生成的输出校验和 | 完全一致 |
 | **DQ-17** | Bin 分布合理性 | Bin 分布符合预期（Hard Fail < 0.5%，功能 bin 集中） | 通过 |
 | **DQ-18** | 无 NaN/Inf | 所有输出字段 | 0 个非法值 |
 | **DQ-19** | 值-限值一致性 | CSV / STDF / AD5 中的 limit 三者一致 | 100% |
 | **DQ-20** | 坐标可重建 | 由 STDF 重建的 wafer map 与 `die_map.csv` 一致 | 100% |
-| **DQ-21** | 跨 RID 一致性 | 6 个 RID 上相同配置 + 相同种子的输出 | **字节级一致** |
+| **DQ-21** | 跨 RID 一致性 | 6 个 RID 上相同配置（含固定 `run.generated_at`）+ 相同种子的输出 | **字节级一致** |
 | **DQ-22** | 工作簿不变量 | `workbook verify` 的 INV-1 ~ INV-7 | 全部通过 |
 
 **SD-NFR-200**（MUST）：数据质量检查必须：
@@ -2028,7 +2028,7 @@ defects:
 
 | 编号 | 强度 | 需求 | 验收 |
 | --- | --- | --- | --- |
-| **SD-NFR-110** | MUST | 生成的数据必须**明确标注为合成数据**（`metadata.is_synthetic = true`，且 STDF 的 `SMR` 备注字段标注） | 自动化 |
+| **SD-NFR-110** | MUST | 生成的数据必须**明确标注为合成数据**（`metadata.is_synthetic = true`，且 STDF 的 `MIR.USER_TXT` 写入 `SYNTHETIC` 标记） | 自动化 |
 | **SD-NFR-111** | MUST | 不得包含任何真实企业 / 产品 / 客户名称（示例数据使用虚构标识） | 人工审查 |
 | **SD-NFR-112** | MUST | 默认保留策略：**已持久化的工作簿永不自动删除**（删除必须显式）；临时工作簿按 §2.4 的保留期回收，且必须确认 + 优先回收站 | 自动化 |
 
@@ -2089,7 +2089,7 @@ defects:
 | **AC-38** | 导出 JSON 元数据，含配置、种子、关联表、缺陷列表 | 结构约束校验通过 |
 | **AC-39** | 支持 18 个内置预设 | `presets list` 输出完整 |
 | **AC-40** | 支持自定义预设（YAML）并可运行 | 自定义预设生成成功 |
-| **AC-41** | 相同 seed 两次生成输出一致 | `DQ-16` 校验和比对 |
+| **AC-41** | 相同配置（含固定 `generated_at`）+ 同 seed 两次生成输出一致 | `DQ-16` 校验和比对 |
 | **AC-42** | 并行生成且结果与串行一致 | `-j 8` 与 `-j 1` 输出校验和相同 |
 | **AC-43** | 提供 die map / bin map / 参数分布图 PNG | 图片文件存在且内容正确 |
 | **AC-44** | 生成 HTML 自检报告，含全部 `DQ` 检查结果 | 报告存在且 DQ 项全部有结论 |
@@ -2144,7 +2144,7 @@ defects:
 | **R-04** | 大规模数据性能不足 | 中 | 从 M0 起就设计成分片并行；采用暂存入库通道；早做基准测试（性能基准工程 + CI 门禁） |
 | **R-05** | 需求方对"有意义"的定义与实现不一致 | 中 | 提供 18 个预设 + `DQ` 量化标准，**验收以 DQ 指标为准而非主观判断** |
 | **R-06** | 联动性过强导致数据"人造痕迹明显" | 中 | 提供 `correlation_strength` 分档与对照组（`P-WEAK-CORR` / `P-NO-CORR`） |
-| **R-07** | STDF 扩展字段（XY）与标准冲突 | 中 | `strict` / `yms_extended` 双 profile |
+| **R-07** | ~~STDF 扩展字段（XY）与标准冲突~~ **已关闭（2026-10-20）**：XY 是 `PRR` 标准字段 | — | 无自定义扩展，不存在冲突 |
 | **R-08** | 缺陷注入后良率不可控 | 中 | `DQ-04` / `DQ-11` 自动校验并反馈调整 |
 | **R-09** | 各 YMS 工具的 TXT 格式差异大 | 中 | 模板化 + 内置常见模板 + 用户自定义 |
 | **R-13** | "完全隔离"决策导致用户无法在工具内对比两个场景 | 中 | **必须**在 GUI 与文档中给出"如何对比"的明确指引（`SD-SYS-272` / `SD-GUI-082`）；并在单库内保留完整的 Lot/Wafer/Die 对比能力 |
@@ -2165,8 +2165,8 @@ defects:
 | 编号 | 问题 | 影响 | 建议默认 | 需要用户提供 |
 | --- | --- | --- | --- | --- |
 | **SD-Q-003** | **AD5 格式的权威规范文档与样例文件**（公开检索未找到权威定义） | **极高：AD5 插件无法开工，是唯一的开工阻塞项** | 收到样例后冻结字段与排布 | ① AD5 样例文件（脱敏）② 字段定义 / 规格文档 ③ 编码与分隔符 ④ 是否需 header block ⑤ 单文件含整 Lot 还是按 Wafer |
-| **SD-Q-001** | 目标 YMS 的具体产品与版本？（决定 STDF 兼容细节与导入行为） | 高：影响 STDF profile 选择、TXT 模板、验收方式 | 兼容主流解析器 + 至少一款主流 YMS | YMS 名称 / 版本、导入失败的典型报错 |
-| **SD-Q-002** | 目标 YMS 是否要求 STDF 携带 Die XY 坐标？是否接受自定义 `GDR` 扩展？ | 高：决定 `strict` vs `yms_extended` 的默认值 | 默认 `strict`；若 YMS 依赖 Map 则切 `yms_extended` | YMS 的 Map 重建机制说明 |
+| **SD-Q-001** | 目标 YMS 的具体产品与版本？（决定 STDF 兼容细节与导入行为） | 高：影响 STDF 兼容细节、TXT 模板、验收方式 | 兼容主流解析器 + 至少一款主流 YMS | YMS 名称 / 版本、导入失败的典型报错 |
+| **SD-Q-002** | **已裁决（2026-10-20）**：XY 由标准 `PRR.X_COORD` / `Y_COORD` 承载，strict 即可重建 wafer map；不设 `yms_extended`，不写自定义 `GDR` | — | — | — |
 | **SD-Q-004** | 28nm 基准的产品类型与工艺平台？（CMOS LP/ULP、是否含 SRAM/IO/HV/模拟器件） | 高：决定 28nm 测试项库内容与器件类型清单 | 28nm HKMG CMOS LP + SRAM + IO18 | 产品参数、器件类型清单 |
 | **SD-Q-006** | 单次最大数据规模（lot 数上限）与典型日生成量？ | 高：决定性能目标与分片策略 | 100 Lot/日基线，峰值 500 | 实际业务量预估 |
 | **SD-Q-060** | **`batch`（批量创建 / 导出 / 打包，逐个执行单文件操作）是否保留？** 它**不建立任何关联**、不写索引、不改变工作簿内容，只是省去重复调用；但字面上可被视为"跨文件操作" | **中高**：若不保留，与"日生成 100 Lot"目标（`SD-SCL-021`/`SD-SCL-022`）冲突 | **保留** | 见 §8.2.2 的边界说明 |
@@ -2184,9 +2184,9 @@ defects:
 | **SD-Q-010** | 工作簿的共享方式：单机本地？内网共享目录？每人独立？ | 中：影响并发模型 | **单机本地**；多用户共享仅限"共享只读归档"或"`.sdwb` 包 + 各自解包"；**不要把工作簿目录放网络盘多人同开** |
 | **SD-Q-011** | 是否需要多用户权限 / 审计（谁生成了什么、谁导出了什么）？ | 中：影响元数据表设计 | 记录操作日志（单用户级），不做权限体系 |
 | **SD-Q-012** | 导出文件的目标存储：本地磁盘？网络共享？对象存储（S3）？ | 中：影响导出后端的抽象 | 本地磁盘（默认工作簿内 `exports/`）+ 预留 `ExportSink` 抽象 |
-| **SD-Q-013** | STDF 是否需要 `RDR` / `TCR` / `TSR` / `HIL` 等"可选但某些工具需要"的记录？ | 中 | 默认含 `RDR` 与 `DIE`，其余按 `records` 配置开关 |
-| **SD-Q-014** | 是否需要 `per_lot` 单文件 STDF（25 Wafer 一个大文件）？还是只 `per_wafer`？ | 中 | 两者都支持，默认 `per_wafer` |
-| **SD-Q-015** | 是否需要 STDF 记录的 `compression`？部分老解析器不支持 | 中 | 默认开启，提供关闭开关 |
+| **SD-Q-013** | **已裁决（2026-10-20）**：默认开启 `WCR` / `HBR` / `TSR`，默认关闭 `SBR` / `SDR` / `RDR`；`DIE` / `TCR` / `HIL` 不存在 | — | `optional_records` 配置开关 |
+| **SD-Q-014** | **已裁决（2026-10-20）**：`per_wafer`（默认）与 `per_lot` 都支持；`per_lot` 不写 `WCR` | — | 见 `SD-FMT-018` |
+| **SD-Q-015** | **已裁决（2026-10-20）**：默认不压缩；`compression: gzip` 时整文件 gzip（`.stdf.gz`）；不支持记录级压缩 | — | 见 `SD-FMT-016` |
 | **SD-Q-016** | 测试机型号清单（用于 `tester` 表与程序关联） | 中 | 示例 `V93000` / `T2000`，按用户实际修改 |
 | **SD-Q-018** | 是否需要 CSV/Excel 导出作为第一期对外承诺的格式？ | 中 | 内置 `csv` 插件仅供自检，**不对外承诺** |
 | **SD-Q-056** | 是否需要"工作簿模板"（新建时继承某个工作簿的配置作为起点，而不只是预设）？ | 中 | SHOULD 提供：`workbook new --from <existing>` |
@@ -2273,7 +2273,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | **SD-EXT-030** | SHOULD | **多工艺节点**：交付 14nm 节点包（FinFET），验证继承机制在真实差异下的可用性 | `SD-LIB-060`~`066` |
 | **SD-EXT-031** | SHOULD | **分布模型增强**：skew-normal / 广义极值 / 混合分布，支持偏态与拖尾（先进节点特征） | `SD-LIB-042` |
-| **SD-EXT-032** | SHOULD | **多格式扩展**：Parquet、JSON、XLSX、HTML 报告插件；STDF E5 变体 | 插件框架 |
+| **SD-EXT-032** | SHOULD | **多格式扩展**：Parquet、JSON、XLSX、HTML 报告插件；STDF V4-2007 变体 | 插件框架 |
 | **SD-EXT-033** | SHOULD | **WAT 结构模型扩展**：`reticle_based` / `shared_redundant` 布局，支持冗余结构与结构共享 | `SD-LIB-033`~`036` |
 | **SD-EXT-034** | SHOULD | **数据归档与冷热分层自动化**：定时归档、自动 attach、生命周期策略 | `SD-STO-047` / `SD-STO-095` |
 | **SD-EXT-035** | SHOULD | **导入能力**：把外部 STDF/AD5 读回数据库，用于对比与回归 | `SD-Q-025` |

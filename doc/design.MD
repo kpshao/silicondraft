@@ -853,7 +853,7 @@ public sealed class ExportContext
 | `parent_dataset_id` | 预留（若将来允许一个工作簿多轮生成，用于表达轮次血缘，见 SD-Q-057） |
 | `lot_count` / `wafer_count` / `die_count` / `overall_yield` | 语义不变 |
 
-**SD-STO-032**（MUST）：`sd_workbook` 必须包含 `derived_from` 字段，用于表达 `duplicate` / `unpack` 的派生来源（追溯链，见 §6.9 `SD-FMT-110`）。
+**SD-STO-032**（MUST）：`sd_workbook` 必须包含 `derived_from` 字段，用于表达 `duplicate` / `unpack` 的派生来源（追溯链，见 §6.9 `SD-FMT-045`）。
 
 ### 索引与查询
 
@@ -1103,13 +1103,11 @@ export:
   path_template: "{workbook_exports}/{format}/{lot_id}_{wafer_id}_{test_type}.{ext}"
   plugins:
     stdf:
-      version: E10            # 或 E5
-      data_type: R4
-      compression: true
-      records: [HDR, SMR, PIR, HBR, WIR, PCR, RDR, MRR, GDR, PTR, DIE]
-      include_xy_in_ptr: false
-      profile: strict         # strict | yms_extended
-      naming_profile: internal
+      stdf_version: 4                    # v1 唯一允许值
+      compression: none                  # none | gzip
+      split: per_wafer                   # per_wafer | per_lot
+      optional_records: [WCR, HBR, TSR]  # 可选：WCR / HBR / TSR / SBR / SDR / RDR
+      naming_profile: internal           # internal | foundry | customer
     ad5:
       layout: long
       split: per_lot
@@ -1122,7 +1120,7 @@ export:
 
 **SD-PLG-051**（MUST）：`OptionsSchema` 必须返回合法 JSON Schema（推荐用 `JsonSchema.Net.Generation` 从插件的 Options 类型自动生成）；GUI 据此自动渲染配置表单，CLI 据此校验，**无需为核心代码硬编码插件参数**。
 
-**SD-PLG-052**（MUST）：插件配置必须支持 `--set export.plugins.stdf.version=E5` 命令行覆盖。
+**SD-PLG-052**（MUST）：插件配置必须支持 `--set export.plugins.stdf.compression=gzip` 命令行覆盖。
 
 **SD-PLG-053**（MUST）：`OptionsSchema` 变化（版本升级）时，已保存的插件配置必须做兼容处理：新增字段用默认值补齐，删除字段保留并 WARN。必须按 Schema 的 `additionalProperties` 语义处理未知字段；默认 `false`（**拒绝未知字段并报错**），避免拼写错误的配置静默失效。
 
@@ -1246,6 +1244,8 @@ MISMATCH_CV = K_φ·grad_mag·leff / √Area
 **SD-GEN-195**（MUST）：提供 `reseed` 策略：`fixed` / `increment_by_lot` / `from_manifest`（原 `FR-22.4`）。
 
 **SD-GEN-196**（MUST）：数值输出必须统一舍入到配置的 `precision`（默认按测试项 `unit` 自适应：mV→3 位，uA→4 位，ohm/sq→4 位）（原 `FR-22.5`）。**这是跨平台/跨 RID 输出字节级一致的前提之一**（见 §11.1 `SD-NFR-010`）。
+
+**SD-GEN-198**（MUST）：导出文件的时间字段必须由 `run.generated_at` + 确定性测试时长推导，**不得使用墙钟时间**；具体映射见 `contracts/formats/stdf.MD` `SD-FMT-022`。`run.generated_at` 为空时才允许退回任务启动时间，此时不满足 `SD-GEN-192` / `DQ-16`，必须在 `export_manifest.json` 标记 `time_source: "wall_clock"`。
 
 
 ---
@@ -1631,7 +1631,7 @@ erDiagram
 | **SD-EXT-100** | MUST | DuckDB.NET 入库吞吐与并发语义 | ① 实测批量入库吞吐是否达标；② 验证同进程多连接的可见性与快照语义；③ 验证 Parquet 暂存通道；④ 验证 `batch` 场景下同一进程依次 / 并行创建并释放多个独立工作簿时 DuckDB.NET 能正确处理；⑤ 验证"多实例各写不同工作簿"互不阻塞 | 直写通道不达标 ⇒ 定为通道 B 为默认；并发语义不满足 ⇒ 退化为单连接读写串行队列；并行创建多库不稳定 ⇒ `batch` 退化为串行创建 |
 | **SD-EXT-101** | MUST | **工作簿生命周期与锁的健壮性** | ① 跨进程锁与失效锁检测（含 PID 复用与跨主机场景）；② 随机时刻 `SIGKILL` 后的可恢复性；③ 三平台上的文件锁行为差异（Windows 独占 vs POSIX 建议锁）；④ `File.Move` 原子替换在三平台的表现；⑤ 回收站机制在三平台的可用性与降级路径 | Windows 与 POSIX 差异过大 ⇒ 统一改为"锁文件 + 心跳"的**纯应用层锁**，接受更弱的互斥保证但更强的跨平台一致性；无回收站 ⇒ 降级为 `extra/trash/` 软删除 + 定期清理 |
 | **SD-EXT-102** | MUST | Avalonia + SkiaSharp 自绘 Wafer Map | 5,000 Die 下的缩放 / 平移帧率、tooltip、缺失 / 部分 Die 渲染、中文文本渲染 | 帧率不达标 ⇒ 引入位图缓存（按缩放级别预渲染）+ 分层绘制 |
-| **SD-EXT-103** | MUST | C# 实现 STDF Writer | 记录结构、`HDR` 回填、压缩模式、字节序、第三方解析器可读 | 第三方解析器拒绝 ⇒ 逐字段对齐 E10 规范并用外部工具定位差异 |
+| **SD-EXT-103** | MUST | C# 实现 STDF Writer | 记录结构（`FAR` 首条 / `MRR` 末条 / 配对不变式）、计数记录一致性、整文件 gzip、字节序、第三方解析器可读 | 第三方解析器拒绝 ⇒ 逐字段对齐 STDF V4 规范并用外部工具定位差异 |
 | **SD-EXT-104** | MUST | FFT 谱合成空间场 + MathNet 数值 | 生成的场是否具有期望的空间自相关（Moran's I > 0.3）；性能是否满足 | 谱合成实现复杂 ⇒ 退化为 Perlin / Simplex 噪声叠加（质量略降但可控） |
 | **SD-EXT-105** | MUST | AssemblyLoadContext 插件隔离 | 外部 DLL 被发现、加载、卸载重载、异常隔离、`PluginApi` 类型统一 | 卸载不可靠 ⇒ 放弃热重载，改为重启生效（功能不受影响） |
 | **SD-EXT-106** | MUST | 跨 RID 输出一致性 | 6 个 RID 上相同配置种子的输出是否字节级相同；跨 RID 拷贝工作簿目录后重放 | 浮点差异不可消除 ⇒ 输出全部经 `precision` 舍入并在序列化层统一 |
@@ -1718,6 +1718,7 @@ run:
   name: centerhigh_25lot_20261014
   preset: P-CENTER-HIGH          # 可选：使用内置预设（与 config 内联定义互斥）
   seed: 20261014                 # 主随机种子；null 则随机
+  generated_at: 2026-10-14T14:30:12Z  # 固定生成时间；null 则用任务启动时间（不保证 DQ-16/DQ-21）
   reseed: fixed                  # fixed | increment_by_lot | from_manifest
   parallel: 8                    # 全局并发配额（进程内分片 × 跨工作簿并行 不得超过此值）
   parallel_workbooks: 4          # 批量场景下同时处理的工作簿数
@@ -1892,13 +1893,11 @@ export:
   record_external_exports: true
   plugins:
     stdf:
-      version: E10
-      data_type: R4
-      compression: true
-      profile: strict                # strict | yms_extended
-      split: per_wafer               # per_wafer | per_lot
-      records: [HDR, SMR, PIR, HBR, WIR, PCR, RDR, MRR, GDR, PTR, DIE]
-      naming_profile: internal       # internal | foundry | customer
+      stdf_version: 4                    # v1 唯一允许值
+      compression: none                  # none | gzip
+      split: per_wafer                   # per_wafer | per_lot
+      optional_records: [WCR, HBR, TSR]  # 可选：WCR / HBR / TSR / SBR / SDR / RDR
+      naming_profile: internal           # internal | foundry | customer
     ad5:
       layout: long                   # long | wide
       split: per_lot
